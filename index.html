@@ -75,6 +75,12 @@ label.sl input{flex:1;min-width:0;accent-color:var(--accent)}
 .card{background:var(--panel);border-radius:22px;padding:14px;max-width:420px;width:100%;max-height:100%;display:flex;flex-direction:column;gap:10px;overflow:auto}
 .card img{width:100%;border-radius:12px;display:block;-webkit-touch-callout:default}
 .card p{margin:0;text-align:center;font-weight:900;font-size:14px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.seg button{min-height:42px;padding:8px;font-size:14px}
+.seg button.on{background:var(--yellow);border-color:var(--yellow);color:#18203d}
+input[type=text]{font:inherit;font-weight:700;font-size:15px;border:2px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--bg);color:var(--ink);min-width:0;width:100%}
+#printArea{display:none}
+@media print{html,body{background:#fff!important;padding:0!important}body>.app,body>.modal,.app,.modal{display:none!important}#printArea{display:block!important}#printArea img{width:210mm;height:297mm;display:block}@page{size:A4;margin:0}}
 @media (max-width:440px){.brand small{display:none}.chips button{font-size:12px}}
 @media (max-height:640px){.brand small{display:none}.panel{padding:8px}button{min-height:42px;padding:8px}}
 @media (prefers-reduced-motion:reduce){button:active{transform:none}}
@@ -95,6 +101,7 @@ label.sl input{flex:1;min-width:0;accent-color:var(--accent)}
       <div class="hint" id="hint">ぬりえを枠いっぱいに写してね</div>
     </div>
     <div class="panel">
+      <div class="seg"><button id="tabShoot" class="on">ぬりえを撮る</button><button id="tabMake">塗り絵をつくる</button></div>
       <div class="row">
         <button class="shot" id="btnShot">撮影する</button>
         <label class="btn">写真を選ぶ<input type="file" id="file" accept="image/*" capture="environment"></label>
@@ -134,8 +141,28 @@ label.sl input{flex:1;min-width:0;accent-color:var(--accent)}
       <div class="stat" id="stat">ぬりえをドラッグで移動、2本指で拡大・回転</div>
     </div>
   </section>
-</div>
 
+  <section id="s4" hidden>
+    <div class="view" style="background:#fff"><canvas id="lineView"></canvas></div>
+    <div class="panel">
+      <label class="sl">細かさ<input type="range" id="lDetail" min="0" max="100" value="55"></label>
+      <label class="sl">線の太さ<input type="range" id="lThick" min="1" max="5" value="2"></label>
+      <label class="sl">線を減らす<input type="range" id="lSmooth" min="0" max="3" value="1"></label>
+      <input type="text" id="lineTitle" maxlength="16" placeholder="タイトル（例：わたしのぬりえ）">
+      <div class="row"><button id="btnLRetake">撮り直す</button><button class="main" id="btnLDone">できた！</button></div>
+      <div class="stat">ご自身で撮った写真や絵に限ります。印刷して塗ったら、「ぬりえを撮る」で撮影しよう</div>
+    </div>
+  </section>
+</div>
+<div class="modal" id="lineModal" hidden>
+  <div class="card">
+    <img id="lineImg" alt="塗り絵">
+    <p>画像を長押しして保存できます</p>
+    <div class="row"><button id="btnLPrint" class="main">印刷する</button><button id="btnLSave">画像を保存</button></div>
+    <div class="row"><button id="btnLGo">ぬりえを撮る画面へ</button><button id="btnLClose">閉じる</button></div>
+  </div>
+</div>
+<div id="printArea"><img id="printImg" alt=""></div>
 <div class="modal" id="snapModal" hidden>
   <div class="card">
     <img id="snapImg" alt="記念写真">
@@ -151,9 +178,11 @@ const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const stepsEl=[...$("steps").children];
 let raw=null, sticker=null, squareMode=false, stream=null;
 
+let mode="shoot";
 function show(n){
-  ["s1","s2","s3"].forEach((id,i)=>{$(id).hidden=(i!==n)});
-  stepsEl.forEach((li,i)=>{li.className=i===n?"on":(i<n?"done":"")});
+  ["s1","s2","s3","s4"].forEach((id,i)=>{$(id).hidden=(i!==n)});
+  const mk=(mode==="make"),labels=mk?["1 撮る","2 線にする","3 印刷"]:["1 撮る","2 切り抜く","3 動かす"],idx=n===3?1:n;
+  stepsEl.forEach((li,i)=>{li.textContent=labels[i];li.className=i===idx?"on":(i<idx?"done":"")});
   $("cam").classList.toggle("off",n!==0);
   if(n===0)startCam();
   if(n===2)Stage.start(); else Stage.stop();
@@ -174,11 +203,11 @@ async function startCam(){
 const camReady=()=>stream&&stream.active&&$("cam").videoWidth>0;
 
 function toRaw(src,w,h){
-  const k=Math.min(1,640/Math.max(w,h));
+  const k=Math.min(1,(mode==="make"?1000:640)/Math.max(w,h));
   const c=document.createElement("canvas");c.width=Math.round(w*k);c.height=Math.round(h*k);
   c.getContext("2d").drawImage(src,0,0,c.width,c.height);return c;
 }
-function gotRaw(c){raw=c;squareMode=false;show(1);runCut()}
+function gotRaw(c){if(mode==="make"){gotMake(c);return}raw=c;squareMode=false;show(1);runCut()}
 
 $("btnShot").onclick=()=>{
   if(!camReady()){$("file").click();return}
@@ -219,7 +248,7 @@ function demoPhoto(){
   g.beginPath();g.arc(-95,50,10,3.4,5);g.stroke();g.beginPath();g.arc(65,65,10,3.4,5);g.stroke();
   g.restore();return c;
 }
-$("btnDemo").onclick=()=>gotRaw(demoPhoto());
+$("btnDemo").onclick=()=>gotRaw(mode==="make"?demoObjects():demoPhoto());
 
 /* ---------- 切り抜き ---------- */
 function cutout(src,sens,square){
@@ -351,6 +380,98 @@ function runCut(){
 $("sens").oninput=()=>{clearTimeout(cutTimer);cutTimer=setTimeout(()=>{squareMode=false;runCut()},90)};
 $("btnSquare").onclick=()=>{squareMode=!squareMode;runCut()};
 $("btnOk").onclick=()=>{if(!sticker)return;Stage.add(sticker);show(2)};
+
+
+/* ================= 写真から塗り絵をつくる ================= */
+const PAGE_URL=/^https?:/.test(location.href)&&!/claude\.ai|usercontent/.test(location.host)?location.origin+location.pathname:"https://marunonbe.github.io/nurie-ar/";
+let makeSrc=null,lineCv=null,a4Blob=null;
+function setMode(m){
+  mode=m;$("tabShoot").classList.toggle("on",m==="shoot");$("tabMake").classList.toggle("on",m==="make");
+  $("hint").textContent=m==="make"?"塗り絵にしたいものを、枠いっぱいに写してね":"ぬりえを枠いっぱいに写してね";
+  $("btnDemo").textContent=m==="make"?"見本の写真で試す":"見本のぬりえで試す";
+  show(0);
+}
+$("tabShoot").onclick=()=>setMode("shoot");$("tabMake").onclick=()=>setMode("make");
+function gotMake(c){makeSrc=c;show(3);runLine()}
+$("btnLRetake").onclick=()=>show(0);
+
+function blurP(p,w,h,r){
+  const t=new Float32Array(p.length),o=new Float32Array(p.length),n=2*r+1;
+  for(let y=0;y<h;y++){let s=0;const b=y*w;for(let k=-r;k<=r;k++)s+=p[b+Math.min(w-1,Math.max(0,k))];
+    for(let x=0;x<w;x++){t[b+x]=s/n;s+=p[b+Math.min(w-1,x+r+1)]-p[b+Math.max(0,x-r)]}}
+  for(let x=0;x<w;x++){let s=0;for(let k=-r;k<=r;k++)s+=t[Math.min(h-1,Math.max(0,k))*w+x];
+    for(let y=0;y<h;y++){o[y*w+x]=s/n;s+=t[Math.min(h-1,y+r+1)*w+x]-t[Math.max(0,y-r)*w+x]}}
+  return o;
+}
+function lineArt(src,detail,thick,smooth){
+  const w=src.width,h=src.height,N=w*h,d=src.getContext("2d").getImageData(0,0,w,h).data,r=1+smooth*2;
+  const ch=[0,1,2].map(k=>{const p=new Float32Array(N);for(let i=0;i<N;i++)p[i]=d[i*4+k];return blurP(blurP(p,w,h,r),w,h,r)});
+  const T=240-(240-30)*detail/100;let mask=new Uint8Array(N);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x;let m=0;
+    for(let k=0;k<3;k++){const p=ch[k];
+      const gx=-p[i-w-1]-2*p[i-1]-p[i+w-1]+p[i-w+1]+2*p[i+1]+p[i+w+1];
+      const gy=-p[i-w-1]-2*p[i-w]-p[i-w+1]+p[i+w-1]+2*p[i+w]+p[i+w+1];
+      const v=Math.abs(gx)+Math.abs(gy);if(v>m)m=v}
+    m*=255/((ch[0][i]+ch[1][i]+ch[2][i])/3+100);
+    if(m>T)mask[i]=1;
+  }
+  if(thick>1)mask=morph(mask,w,h,thick-1,true);
+  const C=components(mask,w,h),minS=Math.max(40,N*(.00012+(100-detail)*.000004));
+  const out=new Uint8ClampedArray(N*4);
+  for(let i=0;i<N;i++){const on=mask[i]&&C.sizes[C.lab[i]]>=minS,v=on?17:255;out[i*4]=v;out[i*4+1]=v;out[i*4+2]=v;out[i*4+3]=255}
+  const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").putImageData(new ImageData(out,w,h),0,0);return c;
+}
+let lineTimer=0;
+function runLine(){
+  if(!makeSrc)return;
+  lineCv=lineArt(makeSrc,+$("lDetail").value,+$("lThick").value,+$("lSmooth").value);
+  const v=$("lineView");v.width=lineCv.width;v.height=lineCv.height;v.getContext("2d").drawImage(lineCv,0,0);
+}
+["lDetail","lThick","lSmooth"].forEach(id=>{$(id).oninput=()=>{clearTimeout(lineTimer);lineTimer=setTimeout(runLine,120)}});
+
+function composeA4(){
+  const W=1240,H=1754,c=document.createElement("canvas");c.width=W;c.height=H;const g=c.getContext("2d");
+  g.fillStyle="#fff";g.fillRect(0,0,W,H);g.fillStyle="#111";g.textAlign="center";g.textBaseline="middle";
+  const ff='"Zen Maru Gothic","Noto Sans CJK JP","Hiragino Maru Gothic ProN","Yu Gothic",sans-serif';
+  const title=($("lineTitle").value||"わたしのぬりえ").trim();
+  g.font="900 84px "+ff;g.fillText(title,W/2,150);
+  const bw=W-220,bh=1300,k=Math.min(bw/lineCv.width,bh/lineCv.height),dw=lineCv.width*k,dh=lineCv.height*k;
+  g.imageSmoothingQuality="high";g.drawImage(lineCv,(W-dw)/2,250+(bh-dh)/2,dw,dh);
+  g.font="700 38px "+ff;g.fillText("ぬりえをスマホで撮ると、動きだす！",W/2,1642);
+  g.font="700 28px "+ff;g.fillText("ぬりえAR　"+PAGE_URL,W/2,1698);
+  return c;
+}
+$("btnLDone").onclick=()=>{
+  if(!lineCv)return;const c=composeA4();
+  c.toBlob(b=>{a4Blob=b;$("lineImg").src=c.toDataURL("image/png");$("printImg").src=$("lineImg").src;$("lineModal").hidden=false},"image/png");
+};
+$("btnLClose").onclick=()=>{$("lineModal").hidden=true};
+$("btnLGo").onclick=()=>{$("lineModal").hidden=true;setMode("shoot")};
+$("btnLPrint").onclick=()=>{try{window.print()}catch(_){}};
+$("btnLSave").onclick=async()=>{
+  if(!a4Blob)return;const name="nurie-塗り絵.png";
+  try{const dl=window.claude&&window.claude.use?await window.claude.use("downloads"):null;if(dl){await dl.save({filename:name,data:a4Blob});return}}catch(_){return}
+  const a=document.createElement("a");a.href=URL.createObjectURL(a4Blob);a.download=name;document.body.appendChild(a);a.click();a.remove();
+};
+
+/* 見本の写真(りんごとコップ) */
+function demoObjects(){
+  const c=document.createElement("canvas");c.width=800;c.height=600;const g=c.getContext("2d");
+  let bg=g.createLinearGradient(0,0,0,600);bg.addColorStop(0,"#e8e3d8");bg.addColorStop(.62,"#d9d2c3");bg.addColorStop(.62,"#a67c52");bg.addColorStop(1,"#8c6540");g.fillStyle=bg;g.fillRect(0,0,800,600);
+  g.fillStyle="rgba(0,0,0,.25)";g.beginPath();g.ellipse(300,470,170,26,0,0,7);g.fill();g.beginPath();g.ellipse(600,455,95,18,0,0,7);g.fill();
+  let rg=g.createRadialGradient(260,300,20,300,360,170);rg.addColorStop(0,"#ff8a7a");rg.addColorStop(.5,"#d92b2b");rg.addColorStop(1,"#8f1414");
+  g.fillStyle=rg;g.beginPath();g.moveTo(300,235);g.bezierCurveTo(380,190,470,260,450,360);g.bezierCurveTo(430,470,350,500,300,480);g.bezierCurveTo(250,500,170,470,150,360);g.bezierCurveTo(130,260,220,190,300,235);g.fill();
+  g.strokeStyle="#4a2b12";g.lineWidth=10;g.lineCap="round";g.beginPath();g.moveTo(300,236);g.quadraticCurveTo(300,200,320,170);g.stroke();
+  g.fillStyle="#3d9a3d";g.beginPath();g.moveTo(322,190);g.quadraticCurveTo(380,140,430,170);g.quadraticCurveTo(390,220,322,190);g.fill();
+  g.strokeStyle="rgba(20,70,20,.8)";g.lineWidth=3;g.beginPath();g.moveTo(326,190);g.quadraticCurveTo(380,175,422,170);g.stroke();
+  g.fillStyle="rgba(255,255,255,.45)";g.beginPath();g.ellipse(230,320,22,50,-.4,0,7);g.fill();
+  let cg=g.createLinearGradient(520,0,690,0);cg.addColorStop(0,"#5aa0d8");cg.addColorStop(.5,"#8cc4ee");cg.addColorStop(1,"#3f7fb6");g.fillStyle=cg;
+  g.beginPath();g.moveTo(520,300);g.lineTo(680,300);g.lineTo(660,450);g.quadraticCurveTo(600,475,540,450);g.closePath();g.fill();
+  g.strokeStyle="#3f7fb6";g.lineWidth=14;g.beginPath();g.moveTo(678,330);g.bezierCurveTo(745,320,745,420,662,415);g.stroke();
+  g.fillStyle="#5b3a1d";g.beginPath();g.ellipse(600,302,80,10,0,0,7);g.fill();
+  return c;
+}
 
 /* ================= ステージ(AR表示) ================= */
 const ANIMS=["ふわふわ","くるくる","ぴょんぴょん","おさんぽ","ぐるっと","ドキドキ","ゆらゆら","かくれんぼ"];
