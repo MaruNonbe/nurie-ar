@@ -115,7 +115,8 @@ input[type=text]{font:inherit;font-weight:700;font-size:15px;border:2px solid va
       <div class="seg"><button id="tabShoot" class="on">ぬりえを撮る</button><button id="tabMake">塗り絵をつくる</button><button id="tabPaint">画面で塗る</button></div>
       <div class="row">
         <button class="shot" id="btnShot">撮影する</button>
-        <label class="btn">写真を選ぶ<input type="file" id="file" accept="image/*" capture="environment"></label>
+        <label class="btn">写真を選ぶ<input type="file" id="file" accept="image/*"></label>
+        <input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
       </div>
       <button id="btnDemo">見本のぬりえで試す</button>
     </div>
@@ -253,10 +254,10 @@ function toRaw(src,w,h){
 function gotRaw(c){if(mode==="make"){gotMake(c);return}raw=c;squareMode=false;show(1);runCut()}
 
 $("btnShot").onclick=()=>{
-  if(!camReady()){$("file").click();return}
+  if(!camReady()){$("fileCam").click();return}
   const v=$("cam");gotRaw(toRaw(v,v.videoWidth,v.videoHeight));
 };
-$("file").onchange=async e=>{
+$("file").onchange=$("fileCam").onchange=async e=>{
   const f=e.target.files&&e.target.files[0];e.target.value="";if(!f)return;
   try{
     let bmp;
