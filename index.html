@@ -37,6 +37,9 @@ section{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px}
 section[hidden]{display:none!important}
 .view{flex:1;min-height:0;position:relative;background:var(--stage);border-radius:20px;overflow:hidden;display:grid;place-items:center;box-shadow:var(--shadow)}
 .view video,.view canvas{max-width:100%;max-height:100%;display:block}
+#s4 .view{background:conic-gradient(#d9deee 25%,#fff 0 50%,#d9deee 0 75%,#fff 0) 0 0/18px 18px}
+#faceStyles button{font-size:13px;padding:9px 6px;min-height:42px}
+#faceStyles button.on{background:var(--green);border-color:var(--green);color:#06241b}
 #lineView{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain}
 #cam{width:100%;height:100%;object-fit:contain}
 #cam.off{position:fixed;width:2px;height:2px;opacity:.01;pointer-events:none;left:0;top:0}
@@ -161,6 +164,14 @@ input[type=text]{font:inherit;font-weight:700;font-size:15px;border:2px solid va
       <label class="sl">細かさ<input type="range" id="lDetail" min="0" max="100" value="55"></label>
       <label class="sl">線の太さ<input type="range" id="lThick" min="1" max="5" value="2"></label>
       <label class="sl">線を減らす<input type="range" id="lSmooth" min="0" max="3" value="1"></label>
+      <label class="sl">線のつながり（開いた線を補正）<input type="range" id="lClose" min="0" max="3" value="1"></label>
+      <div class="stat" id="closeHelp">弱：小さな隙間だけ補正　中：標準　強：大きめの隙間も補正</div>
+      <div id="faceWrap" hidden><div class="stat">仕上がりを選択</div>
+      <div class="row" id="faceStyles">
+        <button type="button" data-style="real" class="on">本人そっくり</button>
+        <button type="button" data-style="cute">やさしい似顔絵</button>
+      </div>
+      </div><div class="stat" id="cutStatus"></div>
       <input type="text" id="lineTitle" maxlength="16" placeholder="タイトル（例：わたしのぬりえ）">
       <div class="row"><button id="btnLRetake">撮り直す</button><button id="btnLPaint">画面で塗る</button></div>
       <button class="main" id="btnLDone">できた！（印刷する）</button>
@@ -437,7 +448,7 @@ $("btnOk").onclick=()=>{if(!sticker)return;Stage.add(sticker);show(2)};
 
 /* ================= 写真から塗り絵をつくる ================= */
 const PAGE_URL=/^https?:/.test(location.href)&&!/claude\.ai|usercontent/.test(location.host)?location.origin+location.pathname:"https://marunonbe.github.io/nurie-ar/";
-let makeSrc=null,lineCv=null,a4Blob=null;
+let makeSrc=null,lineCv=null,a4Blob=null,faceStyle="real",personMask=null,segmenter=null;
 function setMode(m){
   mode=m;["Shoot","Make","Paint"].forEach(k=>$("tab"+k).classList.toggle("on",m===k.toLowerCase()));
   if(m!=="paint"){
@@ -447,7 +458,63 @@ function setMode(m){
   m==="paint"?show(4):show(0);
 }
 $("tabShoot").onclick=()=>setMode("shoot");$("tabMake").onclick=()=>setMode("make");$("tabPaint").onclick=()=>setMode("paint");
-function gotMake(c){makeSrc=c;show(3);runLine()}
+const MP="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/";
+function withTimeout(p,ms){return new Promise((res,rej)=>{const t=setTimeout(()=>rej(new Error("timeout")),ms);p.then(v=>{clearTimeout(t);res(v)},e=>{clearTimeout(t);rej(e)})})}
+async function loadPersonSegmenter(){
+  if(segmenter)return segmenter;
+  if(!window.SelfieSegmentation){
+    await new Promise((resolve,reject)=>{const sc=document.createElement("script");sc.src=MP+"selfie_segmentation.js";sc.crossOrigin="anonymous";sc.onload=resolve;sc.onerror=reject;document.head.appendChild(sc)});
+  }
+  segmenter=new SelfieSegmentation({locateFile:f=>MP+f});
+  segmenter.setOptions({modelSelection:0});
+  return segmenter;
+}
+function segmentPeople(src){
+  return new Promise(async(resolve,reject)=>{
+    try{
+      const seg=await loadPersonSegmenter();
+      seg.onResults(res=>{
+        try{
+          const w=src.width,h=src.height,mc=document.createElement("canvas");mc.width=w;mc.height=h;
+          const mg=mc.getContext("2d");mg.drawImage(res.segmentationMask,0,0,w,h);
+          const md=mg.getImageData(0,0,w,h).data,mask=new Uint8ClampedArray(w*h),alpha=new Uint8ClampedArray(w*h);
+          let x0=w,y0=h,x1=0,y1=0,count=0;
+          for(let i=0;i<w*h;i++){
+            const a=md[i*4];alpha[i]=a;
+            if(a>90){mask[i]=1;count++;const x=i%w,y=(i/w)|0;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y}
+          }
+          if(count<w*h*.025){reject(new Error("人物を認識できませんでした"));return}
+          const pad=Math.round(Math.min(w,h)*.025);x0=Math.max(0,x0-pad);y0=Math.max(0,y0-pad);x1=Math.min(w-1,x1+pad);y1=Math.min(h-1,y1+pad);
+          const cw=x1-x0+1,ch=y1-y0+1,srcD=src.getContext("2d").getImageData(0,0,w,h).data;
+          const out=document.createElement("canvas");out.width=cw;out.height=ch;const og=out.getContext("2d"),od=og.createImageData(cw,ch);
+          const ma=document.createElement("canvas");ma.width=cw;ma.height=ch;const mag=ma.getContext("2d"),mi=mag.createImageData(cw,ch);
+          for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){
+            const si=((y+y0)*w+x+x0),di=y*cw+x,sp=si*4,dp=di*4,a=alpha[si];
+            od.data[dp]=srcD[sp];od.data[dp+1]=srcD[sp+1];od.data[dp+2]=srcD[sp+2];od.data[dp+3]=a;
+            mi.data[dp]=mi.data[dp+1]=mi.data[dp+2]=255;mi.data[dp+3]=a;
+          }
+          og.putImageData(od,0,0);mag.putImageData(mi,0,0);personMask=ma;resolve(out);
+        }catch(e){reject(e)}
+      });
+      await seg.send({image:src});
+    }catch(e){reject(e)}
+  });
+}
+async function gotMake(c){
+  makeSrc=c;lineCv=null;personMask=null;$("faceWrap").hidden=true;$("cutStatus").textContent="人物を認識しています…";show(3);
+  try{
+    makeSrc=await withTimeout(segmentPeople(c),20000);
+    $("faceWrap").hidden=false;$("cutStatus").textContent="人物を切り抜きました。背景は透明になります";
+  }catch(e){
+    personMask=null;makeSrc=c;
+    $("cutStatus").textContent="人物が見つからないため、写真全体から線画を作りました";
+  }
+  runLine();
+}
+$("faceStyles").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+  faceStyle=b.dataset.style;$("faceStyles").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));runLine();
+});
+
 $("btnLRetake").onclick=()=>show(0);
 $("btnLPaint").onclick=()=>{if(!lineCv)return;mode="paint";["Shoot","Make","Paint"].forEach(k=>$("tab"+k).classList.toggle("on",k==="Paint"));openPaintCanvas(lineCv)};
 
@@ -459,12 +526,15 @@ function blurP(p,w,h,r){
     for(let y=0;y<h;y++){o[y*w+x]=s/n;s+=t[Math.min(h-1,y+r+1)*w+x]-t[Math.max(0,y-r)*w+x]}}
   return o;
 }
-function lineArt(src,detail,thick,smooth){
-  const w=src.width,h=src.height,N=w*h,d=src.getContext("2d").getImageData(0,0,w,h).data,r=1+smooth*2;
+function lineArt(src,detail,thick,smooth,closeStrength){
+  const P=!!personMask,w=src.width,h=src.height,N=w*h,d=src.getContext("2d").getImageData(0,0,w,h).data;
+  const r=P?(faceStyle==="real"?1+smooth*2:2+smooth*2):1+smooth*2;
   const ch=[0,1,2].map(k=>{const p=new Float32Array(N);for(let i=0;i<N;i++)p[i]=d[i*4+k];return blurP(blurP(p,w,h,r),w,h,r)});
-  const T=240-(240-30)*detail/100;let mask=new Uint8Array(N);
+  const T=!P?240-(240-30)*detail/100:(faceStyle==="real"?(218-(218-42)*detail/100):(246-(246-82)*detail/100));
+  let mask=new Uint8Array(N),inside=new Uint8Array(N);
+  for(let i=0;i<N;i++)inside[i]=P?(d[i*4+3]>70?1:0):1;
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
-    const i=y*w+x;let m=0;
+    const i=y*w+x;if(!inside[i])continue;let m=0;
     for(let k=0;k<3;k++){const p=ch[k];
       const gx=-p[i-w-1]-2*p[i-1]-p[i+w-1]+p[i-w+1]+2*p[i+1]+p[i+w+1];
       const gy=-p[i-w-1]-2*p[i-w]-p[i-w+1]+p[i+w-1]+2*p[i+w]+p[i+w+1];
@@ -473,18 +543,23 @@ function lineArt(src,detail,thick,smooth){
     if(m>T)mask[i]=1;
   }
   if(thick>1)mask=morph(mask,w,h,thick-1,true);
-  const C=components(mask,w,h),minS=Math.max(40,N*(.00012+(100-detail)*.000004));
+  if(P&&closeStrength>0){
+    const cr=Math.min(3,Math.max(1,Math.round(closeStrength)));
+    mask=morph(morph(mask,w,h,cr,true,0),w,h,cr,false,1);
+  }
+  let keep=null;
+  if(!P){const C=components(mask,w,h),minS=Math.max(40,N*(.00012+(100-detail)*.000004));keep=i=>C.sizes[C.lab[i]]>=minS}
   const out=new Uint8ClampedArray(N*4);
-  for(let i=0;i<N;i++){const on=mask[i]&&C.sizes[C.lab[i]]>=minS,v=on?17:255;out[i*4]=v;out[i*4+1]=v;out[i*4+2]=v;out[i*4+3]=255}
+  for(let i=0;i<N;i++){const on=mask[i]&&(!keep||keep(i)),v=on?(P?12:17):255,o=i*4;out[o]=out[o+1]=out[o+2]=v;out[o+3]=inside[i]?(P?d[o+3]:255):0}
   const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").putImageData(new ImageData(out,w,h),0,0);return c;
 }
 let lineTimer=0;
 function runLine(){
   if(!makeSrc)return;
-  lineCv=lineArt(makeSrc,+$("lDetail").value,+$("lThick").value,+$("lSmooth").value);
-  const v=$("lineView");v.width=lineCv.width;v.height=lineCv.height;v.getContext("2d").drawImage(lineCv,0,0);
+  lineCv=lineArt(makeSrc,+$("lDetail").value,+$("lThick").value,+$("lSmooth").value,+$("lClose").value);
+  const v=$("lineView");v.width=lineCv.width;v.height=lineCv.height;const g=v.getContext("2d");g.clearRect(0,0,v.width,v.height);g.drawImage(lineCv,0,0);
 }
-["lDetail","lThick","lSmooth"].forEach(id=>{$(id).oninput=()=>{clearTimeout(lineTimer);lineTimer=setTimeout(runLine,120)}});
+["lDetail","lThick","lSmooth","lClose"].forEach(id=>{$(id).oninput=()=>{clearTimeout(lineTimer);lineTimer=setTimeout(runLine,120)}});
 
 function composeA4(){
   const W=1240,H=1754,c=document.createElement("canvas");c.width=W;c.height=H;const g=c.getContext("2d");
@@ -664,7 +739,11 @@ pView.addEventListener("pointerup",pUp);pView.addEventListener("pointercancel",p
 $("pGo").onclick=()=>{
   if(!pImg)return;const c=document.createElement("canvas");c.width=PW;c.height=PH;const g=c.getContext("2d");
   g.fillStyle="#fff";g.fillRect(0,0,PW,PH);g.drawImage(pColCv,0,0);g.drawImage(pLineCv,0,0);
-  let st=cutout(c,12,false);if(!st)st=cutout(c,0,true);Stage.add(st);show(2);
+  if(personMask){
+    const k=Math.min(PW/personMask.width,PH/personMask.height),mw=personMask.width*k,mh=personMask.height*k;
+    g.globalCompositeOperation="destination-in";g.drawImage(personMask,(PW-mw)/2,(PH-mh)/2,mw,mh);g.globalCompositeOperation="source-over";Stage.add(c)
+  }else{let st=cutout(c,12,false);if(!st)st=cutout(c,0,true);Stage.add(st)}
+  show(2);
 };
 
 /* ================= ステージ(AR表示) ================= */
